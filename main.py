@@ -6,7 +6,7 @@ import pyshaders
 
 import numpy as np
 
-from math import pi
+from math import pi, radians as to_radians, tan, cos, sin
 
 from scipy.spatial.transform import Rotation
 
@@ -79,8 +79,7 @@ precision mediump float;
 
 out lowp vec4 output_color;
 
-uniform vec4 camera_pos;
-uniform vec4 camera_dir;
+uniform vec4 eye_pos;
 
 uniform vec4 view_origin;
 uniform vec4 view_x;
@@ -92,8 +91,8 @@ uniform int xy_squares_count;
 
 void main() {
   vec4 location_on_view = view_origin + gl_FragCoord.x * view_x + gl_FragCoord.y * view_y;
-  vec4 ray_pos = vec4(camera_pos + camera_dir * (-10.0));
-  vec4 ray_dir = normalize(location_on_view + (-ray_pos));
+  vec4 ray_pos = eye_pos;
+  vec4 ray_dir = normalize(location_on_view - eye_pos);
 
   float nearest_distance = 100000.0;
   lowp vec3 nearest_color = vec3(0.8, 0.8, 1.0);
@@ -166,10 +165,11 @@ class GPUSquare:
             return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
 
         self._cached_square = deepcopy(self.square)
-        self._cached_transform = translation(-self.square.position) * \
-                                 rotation(np.cross(self.square.normal, v3(z=1)) *
-                                          angle_between(self.square.normal, v3(z=1))) * \
-                                 scale(1 / self.square.extents[0], 1 / self.square.extents[1], 1)
+        mat_scale = scale(1 / self.square.extents[0], 1 / self.square.extents[1], 1)
+        mat_rotate = rotation(np.cross(self.square.normal, v3(z=1)) *
+                                          angle_between(v3(z=1), self.square.normal))
+        mat_translate = translation(-self.square.position)
+        self._cached_transform = np.matmul(np.matmul(mat_scale, mat_rotate), mat_translate)
         return self._cached_transform
 
 
@@ -181,6 +181,7 @@ class Camera:
         self.up = v3(0, 1, 0)
         self.viewport_size = v2(80, 60)
         self.screen_resolution = v2(800, 600)
+        self.fov = 60
 
         self._cached_view_origin = v4()
         self._cached_view_x = v4(w=0)
@@ -205,8 +206,8 @@ class Camera:
             basis_y * self.viewport_size[1] * 0.5)
 
     def update_shader_uniforms(self, shader):
-        shader.uniforms.camera_pos = tuple(v4_pos(self.position))
-        shader.uniforms.camera_dir = tuple(v4_dir(self.direction))
+        shader.uniforms.eye_pos = tuple(v4_pos(self.position - self.direction * \
+                                               tan(to_radians(self.fov)) * 0.5 * self.viewport_size[0]))
         shader.uniforms.view_origin = tuple(self._cached_view_origin)
         shader.uniforms.view_x = tuple(self._cached_view_x)
         shader.uniforms.view_y = tuple(self._cached_view_y)
@@ -242,15 +243,26 @@ class KlossRoyaleWindow(pyglet.window.Window):
                                                                        -1.0, 1.0, 1.0, -1.0, 1.0, 1.0)))
 
         self.scene = Scene()
-        self.scene.add_square(Square(position=v3(0, 0, 0), normal=v3(0, 0, 1), extents=v2(20, 20)))
+        self.scene.add_square(Square(position=v3(20, -20, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
+        self.scene.add_square(Square(position=v3(20, 20, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
+        self.scene.add_square(Square(position=v3(-20, 20, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
+        self.scene.add_square(Square(position=v3(-20, -20, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
         self.camera = Camera()
+        self.camera.position = v3(10, 10, 10)
+        self.camera.direction = -self.camera.position / np.linalg.norm(self.camera.position)
+        self.camera.up = v3(0, 0, 1)
         self.camera.update_view_basis()
-        # pyglet.clock.schedule(self.update, .1)
+        self.cur_angle = 0
+        pyglet.clock.schedule(self.update, .1)
 
-    # def update(self, dt, _desired_dt):
-    #     self.shader.uniforms.enemy_n = len(self.enemies)
-    #     self.shader.uniforms.enemy_positions_and_radii = tuple((e.position[0], e.position[1], e.radius)
-    #                                                            for e in self.enemies)
+    def update(self, dt, _desired_dt):
+        self.cur_angle += 2 * pi * dt / 5
+        self.camera.position = 10 * v3(cos(self.cur_angle) * cos(to_radians(45)),
+                                       sin(self.cur_angle) * cos(to_radians(45)),
+                                       sin(to_radians(45)))
+        self.camera.direction = -self.camera.position / np.linalg.norm(self.camera.position)
+        self.camera.up = v3(0, 0, 1)
+        self.camera.update_view_basis()
 
     def on_draw(self):
         self.clear()
@@ -266,8 +278,3 @@ if __name__ == "__main__":
     # pyshaders.transpose_matrices(False)
     window = KlossRoyaleWindow(visible=True, width=800, height=600, resizable=True)
     pyglet.app.run()
-
-    # ensure shaders are GC'd before interpreter shutdown
-    del window
-    import gc
-    gc.collect()
