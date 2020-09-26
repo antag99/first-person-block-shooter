@@ -340,5 +340,5 @@ if __name__ == "__main__":
     window = KlossRoyaleWindow(visible=True, resizable=True)
     window.set_mouse_visible(False)
     window.set_exclusive_mouse(True)
-    window.set_fullscreen(True)
+    # window.set_fullscreen(True)
     pyglet.app.run()
