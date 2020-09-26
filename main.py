@@ -271,8 +271,8 @@ class KlossRoyaleWindow(pyglet.window.Window):
         ]
         self.yaw = 0
         self.pitch = 0
-        self.eye_pos = v3(0, 0, 10)
-        self.mouse_sensitivity = 2 * pi / 240
+        self.eye_pos = v3(20, 20, 80)
+        self.mouse_sensitivity = 2 * pi / 320
         self.active_keys = set()
 
         self.camera = Camera()
@@ -320,7 +320,7 @@ class KlossRoyaleWindow(pyglet.window.Window):
         if np.array_equal(move_direction, v3()):
             return
 
-        self.eye_pos += Rotation.from_euler('z', self.yaw).apply(move_direction) * 50 * dt
+        self.eye_pos += Rotation.from_euler('z', self.yaw).apply(move_direction) * 400 * dt
         self._update_camera()
 
     def on_draw(self):
