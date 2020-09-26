@@ -200,8 +200,8 @@ class Camera:
     def update_view_basis(self,
                           viewport_size=None,
                           screen_resolution=None):
-        self.viewport_size = viewport_size or self.viewport_size
-        self.screen_resolution = screen_resolution or self.screen_resolution
+        self.viewport_size = viewport_size if viewport_size is not None else self.viewport_size
+        self.screen_resolution = screen_resolution if screen_resolution is not None else self.screen_resolution
 
         view_scale_x = self.viewport_size[0] / 2.0
         view_scale_y = self.viewport_size[1] / 2.0
