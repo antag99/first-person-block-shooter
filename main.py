@@ -11,6 +11,7 @@ import numpy as np
 from math import pi, radians as to_radians, tan, cos, sin, floor, sqrt, ceil
 
 from scipy.spatial.transform import Rotation
+from random import Random
 
 
 def v2(x=0.0, y=0.0):
@@ -234,10 +235,134 @@ class Scene:
     def update_shader_uniforms(self, shader):
         gpu_squares = self._gpu_squares
         if len(gpu_squares) > MAX_SCENE_SQUARES:
+            print("WARNING: max squares exceeded!")
             gpu_squares = gpu_squares[:MAX_SCENE_SQUARES]
         shader.uniforms.xy_squares_count = len(gpu_squares)
         shader.uniforms.xy_square_transforms = tuple(tuple(tuple(r for r in s.compute_transform())) for s in gpu_squares)
         shader.uniforms.xy_square_colors = tuple(tuple(s.square.color) for s in gpu_squares)
+
+
+class Room:
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+        self.direct_connections = []
+        self.adjacent_rooms = []
+
+    def compute_reachable(self, reachable_set):
+        if self in reachable_set:
+            return
+        reachable_set.add(self)
+        for connected_room in self.direct_connections:
+            connected_room.compute_reachable(reachable_set)
+
+
+class Maze:
+
+    def __init__(self):
+        self.rooms = []
+        self.rooms_by_coords = dict()
+
+        for i in range(0, 8):
+            for j in range(0, 8):
+                room = Room(i, j)
+                self.rooms.append(room)
+                self.rooms_by_coords[i, j] = room
+
+        for i in range(0, 8):
+            for j in range(0, 8):
+                room = self.rooms_by_coords[i, j]
+                room.adjacent_rooms = [self.rooms_by_coords[i + ioff, j + joff]
+                                       for ioff in [-1, 0, 1]
+                                       for joff in [-1, 0, 1]
+                                       if i + ioff in range(0, 8)
+                                       and j + joff in range(0, 8)
+                                       and abs(ioff) + abs(joff) == 1]
+
+        random = Random(42)
+
+        not_completely_connected = list(self.rooms)
+
+        while len(not_completely_connected) > 0:
+            room = random.choice(not_completely_connected)
+            reachable = set()
+            room.compute_reachable(reachable)
+            non_reachable_adjacent = set(room.adjacent_rooms) - reachable
+            if len(non_reachable_adjacent) > 0:
+                room_connected = random.choice(list(non_reachable_adjacent))
+                room.direct_connections.append(room_connected)
+                room_connected.direct_connections.append(room)
+            else:
+                not_completely_connected.remove(room)
+
+    def to_squares(self):
+        maze_size = 3200.0
+        room_size = maze_size / 8.0
+
+        port_width = room_size * 0.2
+        port_height = 120.0
+        wall_height = 200
+
+        squares = [Square(position=v3(maze_size, maze_size) * 0.5,
+                          extents=v2(maze_size, maze_size) * 0.5, color=v3(0.2, 0.2, 0.2))]
+
+        def is_connected(fx, fy, tx, ty):
+            if (fx, fy) not in self.rooms_by_coords:
+                return False
+
+            return any(r.x == tx and r.y == ty
+                       for r in self.rooms_by_coords[fx, fy].direct_connections)
+
+        left_wall_begin_pos = v3(0, 0, 0)
+        for i in range(0, 9):
+            for j in range(0, 9):
+                if j == 8:
+                    left_wall_end_pos = v3(i, j) * room_size + v3(0, 0, wall_height)
+                    new_begin_pos = v3(i + 1, 0, 0) * room_size
+                else:
+                    left_wall_end_pos = v3(i, j + 0.5) * room_size + v3(0, -port_width * 0.5, wall_height)
+                    new_begin_pos = v3(i, j + 0.5) * room_size + v3(0, port_width * 0.5)
+
+                if is_connected(i, j, i - 1, j) or j == 8:
+                    squares.append(Square(
+                        position=(left_wall_end_pos + left_wall_begin_pos) * 0.5,
+                        extents=v2(left_wall_end_pos[2] - left_wall_begin_pos[2],
+                                   left_wall_end_pos[1] - left_wall_begin_pos[1]) * 0.5,
+                        normal=v3(1, 0, 0)))
+                    if is_connected(i, j, i - 1, j):
+                        squares.append(Square(
+                            position=(new_begin_pos + left_wall_end_pos) * 0.5 + v3(0, 0, wall_height*0.5 - (wall_height - port_height) * 0.5),
+                            extents=v2((wall_height - port_height) * 0.5,
+                                       port_width * 0.5),
+                            normal=v3(1, 0, 0)))
+                    left_wall_begin_pos = new_begin_pos
+
+        bottom_wall_begin_pos = v3(0, 0, 0)
+        for j in range(0, 9):
+            for i in range(0, 9):
+                if i == 8:
+                    bottom_wall_end_pos = v3(i, j) * room_size + v3(0, 0, wall_height)
+                    new_begin_pos = v3(0, j + 1, 0) * room_size
+                else:
+                    bottom_wall_end_pos = v3(i + 0.4, j) * room_size + v3(0, 0, wall_height)
+                    new_begin_pos = v3(i + 0.6, j, 0) * room_size
+
+                has_port = is_connected(i, j, i, j - 1)
+
+                if has_port or i == 8:
+                    squares.append(Square(
+                        position=(bottom_wall_end_pos + bottom_wall_begin_pos) * 0.5,
+                        extents=v2(bottom_wall_end_pos[0] - bottom_wall_begin_pos[0],
+                                   bottom_wall_end_pos[2] - bottom_wall_begin_pos[2]) * 0.5,
+                        normal=v3(0, 1, 0)))
+                    if is_connected(i, j, i, j - 1):
+                        squares.append(Square(
+                            position=(new_begin_pos + bottom_wall_end_pos) * 0.5 + v3(0, 0, wall_height*0.5 - (wall_height - port_height) * 0.5),
+                            extents=v2((wall_height - port_height) * 0.5,
+                                       port_width * 0.5),
+                            normal=v3(0, 1, 0)))
+                    bottom_wall_begin_pos = new_begin_pos
+        return squares
 
 
 class KlossRoyaleWindow(pyglet.window.Window):
@@ -255,9 +380,12 @@ class KlossRoyaleWindow(pyglet.window.Window):
 
         self.scene = Scene()
 
-        self.scene.add_square(Square(position=v3(0, 0, 0), normal=v3(0, 0, 1), extents=v2(200, 200), color=v3(0.2,0.2,0.2)))
+        for s in Maze().to_squares():
+            self.scene.add_square(s)
 
-        self.scene.add_square(Square(position=v3(-20, -40, 40), normal=v3(1, 0, 0), extents=v2(80, 20)))
+        # self.scene.add_square(Square(position=v3(0, 0, 0), normal=v3(0, 0, 1), extents=v2(200, 200), color=v3(0.2,0.2,0.2)))
+        #
+        # self.scene.add_square(Square(position=v3(-20, -40, 40), normal=v3(1, 0, 0), extents=v2(80, 20)))
 
         # for i in range(-12, 8):
         #     for j in range(-12, 8):
