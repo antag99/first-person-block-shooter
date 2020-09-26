@@ -260,9 +260,9 @@ class KlossRoyaleWindow(pyglet.window.Window):
 
         self.controls = [
             (key.W, v3(1, 0, 0)),
-            (key.A, v3(-1, 0, 0)),
-            (key.S, v3(0, -1, 0)),
-            (key.D, v3(1, 0, 0)),
+            (key.A, v3(0, 1, 0)),
+            (key.S, v3(-1, 0, 0)),
+            (key.D, v3(0, -1, 0)),
         ]
         self.yaw = 0
         self.pitch = 0
