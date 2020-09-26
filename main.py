@@ -1,12 +1,13 @@
 import pyglet
 import pyglet.gl
 import pyglet.clock
+from pyglet.gl import *
 
 import pyshaders
 
 import numpy as np
 
-from math import pi, radians as to_radians, tan, cos, sin
+from math import pi, radians as to_radians, tan, cos, sin, floor, sqrt, ceil
 
 from scipy.spatial.transform import Rotation
 
@@ -68,16 +69,29 @@ def scale(x=1, y=1, z=1):
     ], dtype=float)
 
 
-MAX_SCENE_SQUARES = 256
+MAX_SCENE_SQUARES = 512
 
 frag = """
 #version 300 es
+
+in lowp vec4 point_color;
+out lowp vec4 output_color;
+
+void main() {
+  output_color = point_color;
+}
+"""
+
+vert = """
+#version 300 es
+
+layout(location = 0) in vec2 pixel_coordinates;
 
 precision mediump float;
 //precision mediump vec4;
 //precision mediump mat4;
 
-out lowp vec4 output_color;
+out lowp vec4 point_color;
 
 uniform vec4 eye_pos;
 
@@ -85,12 +99,13 @@ uniform vec4 view_origin;
 uniform vec4 view_x;
 uniform vec4 view_y;
 
+uniform float point_size;
 uniform mat4[MAX_SCENE_SQUARES] xy_square_transforms;
 uniform lowp vec3[MAX_SCENE_SQUARES] xy_square_colors;
 uniform int xy_squares_count;
 
 void main() {
-  vec4 location_on_view = view_origin + gl_FragCoord.x * view_x + gl_FragCoord.y * view_y;
+  vec4 location_on_view = view_origin + pixel_coordinates.x * view_x + pixel_coordinates.y * view_y;
   vec4 ray_pos = eye_pos;
   vec4 ray_dir = normalize(location_on_view - eye_pos);
 
@@ -114,18 +129,11 @@ void main() {
     }
   }
 
-  output_color = vec4(nearest_color, 1);
+  gl_Position = vec4(pixel_coordinates, 1, 1);
+  gl_PointSize = point_size;
+  point_color = vec4(nearest_color, 1);
 }
 """.replace("MAX_SCENE_SQUARES", str(MAX_SCENE_SQUARES))
-
-vert = """
-#version 300 es
-layout(location = 0)in vec2 vert;
-
-void main() {
-  gl_Position = vec4(vert, 1, 1);
-}
-"""
 
 from copy import deepcopy
 
@@ -193,8 +201,8 @@ class Camera:
         self.viewport_size = viewport_size or self.viewport_size
         self.screen_resolution = screen_resolution or self.screen_resolution
 
-        view_scale_x = self.viewport_size[0] / self.screen_resolution[0]
-        view_scale_y = self.viewport_size[1] / self.screen_resolution[1]
+        view_scale_x = self.viewport_size[0] / 2.0
+        view_scale_y = self.viewport_size[1] / 2.0
 
         basis_x = np.cross(self.direction, self.up)
         basis_x = basis_x / np.linalg.norm(basis_x)
@@ -202,8 +210,7 @@ class Camera:
 
         self._cached_view_x = v4_dir(basis_x * view_scale_x)
         self._cached_view_y = v4_dir(basis_y * view_scale_y)
-        self._cached_view_origin = v4_pos(self.position - basis_x * self.viewport_size[0] * 0.5 - \
-            basis_y * self.viewport_size[1] * 0.5)
+        self._cached_view_origin = v4_pos(self.position)
 
     def update_shader_uniforms(self, shader):
         shader.uniforms.eye_pos = tuple(v4_pos(self.position - self.direction * \
@@ -236,17 +243,21 @@ class KlossRoyaleWindow(pyglet.window.Window):
     def __init__(self, **kwargs):
         super(KlossRoyaleWindow, self).__init__(**kwargs)
 
+        glEnable(GL_VERTEX_PROGRAM_POINT_SIZE)
+
         self.shader = pyshaders.from_string(vert, frag)
         self.shader.use()
 
-        self.screen_vertices = pyglet.graphics.vertex_list(6, ('v2f', (-1.0, 1.0, 1.0, -1, -1, -1,
-                                                                       -1.0, 1.0, 1.0, -1.0, 1.0, 1.0)))
+        self.pixel_size = 1
+        self.pixel_vertices = None
+        self._build_vertex_list()
 
         self.scene = Scene()
-        self.scene.add_square(Square(position=v3(20, -20, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
-        self.scene.add_square(Square(position=v3(20, 20, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
-        self.scene.add_square(Square(position=v3(-20, 20, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
-        self.scene.add_square(Square(position=v3(-20, -20, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
+
+        for i in range(-12, 8):
+            for j in range(-12, 8):
+                self.scene.add_square(Square(position=v3(20*i, 20*j, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
+
         self.camera = Camera()
         self.camera.position = v3(10, 10, 10)
         self.camera.direction = -self.camera.position / np.linalg.norm(self.camera.position)
@@ -254,6 +265,27 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.camera.update_view_basis()
         self.cur_angle = 0
         pyglet.clock.schedule(self.update, .1)
+
+    def on_resize(self, width, height):
+        super().on_resize(width, height)
+        self._build_vertex_list()
+
+    def _build_vertex_list(self):
+        width, height = self.get_size()
+        pixel_count = 6400
+        pixel_area = width * height / pixel_count
+        pixel_size = floor(sqrt(pixel_area))
+        pixel_count_x = ceil(width / pixel_size)
+        pixel_count_y = ceil(height / pixel_size)
+        pixel_begin_x = floor((width - pixel_count_x * pixel_size) * 0.5)
+        pixel_begin_y = floor((height - pixel_count_y * pixel_size) * 0.5)
+        vertices = []
+        for i in range(0, pixel_count_x):
+            for j in range(0, pixel_count_y):
+                vertices += [(pixel_begin_x + pixel_size * i * 2.0) / width - 1.0,
+                             (pixel_begin_y + pixel_size * j * 2.0) / height - 1.0]
+        self.pixel_vertices = pyglet.graphics.vertex_list(len(vertices) // 2, ('v2f', tuple(vertices)))
+        self.pixel_size = pixel_size
 
     def update(self, dt, _desired_dt):
         self.cur_angle += 2 * pi * dt / 5
@@ -266,9 +298,10 @@ class KlossRoyaleWindow(pyglet.window.Window):
 
     def on_draw(self):
         self.clear()
+        self.shader.uniforms.point_size = self.pixel_size
         self.camera.update_shader_uniforms(self.shader)
         self.scene.update_shader_uniforms(self.shader)
-        self.screen_vertices.draw(pyglet.gl.GL_TRIANGLES)
+        self.pixel_vertices.draw(GL_POINTS)
 
     def on_key_press(self, symbol, modifiers):
         pass
