@@ -254,9 +254,13 @@ class KlossRoyaleWindow(pyglet.window.Window):
 
         self.scene = Scene()
 
-        for i in range(-12, 8):
-            for j in range(-12, 8):
-                self.scene.add_square(Square(position=v3(20*i, 20*j, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
+        self.scene.add_square(Square(position=v3(0, 0, 0), normal=v3(0, 0, 1), extents=v2(200, 200), color=v3(0.2,0.2,0.2)))
+
+        self.scene.add_square(Square(position=v3(-20, -40, 40), normal=v3(1, 0, 0), extents=v2(80, 20)))
+
+        # for i in range(-12, 8):
+        #     for j in range(-12, 8):
+        #         self.scene.add_square(Square(position=v3(20*i, 20*j, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
 
         self.controls = [
             (key.W, v3(1, 0, 0)),
