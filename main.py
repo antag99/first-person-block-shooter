@@ -13,15 +13,15 @@ from math import pi, radians as to_radians, tan, cos, sin, floor, sqrt, ceil
 from scipy.spatial.transform import Rotation
 
 
-def v2(x=0, y=0):
+def v2(x=0.0, y=0.0):
     return np.array([x, y], dtype=float)
 
 
-def v3(x=0, y=0, z=0):
+def v3(x=0.0, y=0.0, z=0.0):
     return np.array([x, y, z], dtype=float)
 
 
-def v4(x=0, y=0, z=0, w=1):
+def v4(x=0.0, y=0.0, z=0.0, w=1.0):
     return np.array([x, y, z, w], dtype=float)
 
 
