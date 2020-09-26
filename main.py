@@ -300,7 +300,7 @@ class KlossRoyaleWindow(pyglet.window.Window):
 
     def _build_vertex_list(self):
         width, height = self.get_size()
-        pixel_count = 6400
+        pixel_count = 25600
         pixel_area = width * height / pixel_count
         pixel_size = floor(sqrt(pixel_area))
         pixel_count_x = ceil(width / pixel_size)
