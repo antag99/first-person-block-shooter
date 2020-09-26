@@ -290,6 +290,9 @@ class KlossRoyaleWindow(pyglet.window.Window):
 
     def on_resize(self, width, height):
         super().on_resize(width, height)
+        area = 80 * 60
+        scale = sqrt(area / (width * height))
+        self.camera.update_view_basis(v2(width * scale, height * scale), v2(width, height))
         self._build_vertex_list()
 
     def on_activate(self):
