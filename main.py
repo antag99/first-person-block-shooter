@@ -144,6 +144,7 @@ class Square:
         self.position = position if position is not None else v3()
         self.normal = normal if normal is not None else v3(0, 0, 1)
         self.extents = extents if extents is not None else v2(1, 1)
+        assert self.extents[0] > 0 and self.extents[1] > 0
         self.color = color if color is not None else v3(1.0, 0.0, 0.0)
 
     def has_same_transform_as(self, o) -> bool:
