@@ -2,6 +2,7 @@ import pyglet
 import pyglet.gl
 import pyglet.clock
 from pyglet.gl import *
+from pyglet.window import key
 
 import pyshaders
 
@@ -210,11 +211,10 @@ class Camera:
 
         self._cached_view_x = v4_dir(basis_x * view_scale_x)
         self._cached_view_y = v4_dir(basis_y * view_scale_y)
-        self._cached_view_origin = v4_pos(self.position)
+        self._cached_view_origin = v4_pos(self.position + self.direction * tan(to_radians(self.fov)) * 0.5 * self.viewport_size[0])
 
     def update_shader_uniforms(self, shader):
-        shader.uniforms.eye_pos = tuple(v4_pos(self.position - self.direction * \
-                                               tan(to_radians(self.fov)) * 0.5 * self.viewport_size[0]))
+        shader.uniforms.eye_pos = tuple(v4_pos(self.position))
         shader.uniforms.view_origin = tuple(self._cached_view_origin)
         shader.uniforms.view_x = tuple(self._cached_view_x)
         shader.uniforms.view_y = tuple(self._cached_view_y)
@@ -258,16 +258,36 @@ class KlossRoyaleWindow(pyglet.window.Window):
             for j in range(-12, 8):
                 self.scene.add_square(Square(position=v3(20*i, 20*j, 0), normal=v3(0, 0, 1), extents=v2(5, 5)))
 
+        self.controls = [
+            (key.W, v3(1, 0, 0)),
+            (key.A, v3(-1, 0, 0)),
+            (key.S, v3(0, -1, 0)),
+            (key.D, v3(1, 0, 0)),
+        ]
+        self.yaw = 0
+        self.pitch = 0
+        self.eye_pos = v3(0, 0, 10)
+        self.mouse_sensitivity = 2 * pi / 240
+        self.active_keys = set()
+
         self.camera = Camera()
-        self.camera.position = v3(10, 10, 10)
-        self.camera.direction = -self.camera.position / np.linalg.norm(self.camera.position)
+        self._update_camera()
+        pyglet.clock.schedule(self.update, .1)
+
+    def _compute_look_at_direction(self):
+        return v3(cos(self.yaw) * cos(self.pitch), sin(self.yaw) * cos(self.pitch), sin(self.pitch))
+
+    def _update_camera(self):
+        self.camera.position = self.eye_pos
+        self.camera.direction = self._compute_look_at_direction()
         self.camera.up = v3(0, 0, 1)
         self.camera.update_view_basis()
-        self.cur_angle = 0
-        pyglet.clock.schedule(self.update, .1)
 
     def on_resize(self, width, height):
         super().on_resize(width, height)
+        self._build_vertex_list()
+
+    def on_activate(self):
         self._build_vertex_list()
 
     def _build_vertex_list(self):
@@ -288,13 +308,12 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.pixel_size = pixel_size
 
     def update(self, dt, _desired_dt):
-        self.cur_angle += 2 * pi * dt / 5
-        self.camera.position = 10 * v3(cos(self.cur_angle) * cos(to_radians(45)),
-                                       sin(self.cur_angle) * cos(to_radians(45)),
-                                       sin(to_radians(45)))
-        self.camera.direction = -self.camera.position / np.linalg.norm(self.camera.position)
-        self.camera.up = v3(0, 0, 1)
-        self.camera.update_view_basis()
+        move_direction = sum((control[1] for control in self.controls if control[0] in self.active_keys), v3())
+        if np.array_equal(move_direction, v3()):
+            return
+
+        self.eye_pos += Rotation.from_euler('z', self.yaw).apply(move_direction) * 50 * dt
+        self._update_camera()
 
     def on_draw(self):
         self.clear()
@@ -304,10 +323,22 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.pixel_vertices.draw(GL_POINTS)
 
     def on_key_press(self, symbol, modifiers):
-        pass
+        self.active_keys.add(symbol)
+
+    def on_key_release(self, symbol, modifiers):
+        self.active_keys.discard(symbol)
+
+    def on_mouse_motion(self, x, y, dx, dy):
+        self.yaw -= self.mouse_sensitivity * dx
+        self.pitch += self.mouse_sensitivity * dy
+        self.yaw %= 2 * pi
+        self.pitch %= 2 * pi
+        self._update_camera()
 
 
 if __name__ == "__main__":
-    # pyshaders.transpose_matrices(False)
-    window = KlossRoyaleWindow(visible=True, width=800, height=600, resizable=True)
+    window = KlossRoyaleWindow(visible=True, resizable=True)
+    window.set_mouse_visible(False)
+    window.set_exclusive_mouse(True)
+    window.set_fullscreen(True)
     pyglet.app.run()
