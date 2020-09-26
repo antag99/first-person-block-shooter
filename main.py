@@ -338,9 +338,9 @@ class KlossRoyaleWindow(pyglet.window.Window):
 
     def on_mouse_motion(self, x, y, dx, dy):
         self.yaw -= self.mouse_sensitivity * dx
-        self.pitch += self.mouse_sensitivity * dy
         self.yaw %= 2 * pi
-        self.pitch %= 2 * pi
+        self.pitch += self.mouse_sensitivity * dy
+        self.pitch = max(-pi / 2.0, min(pi / 2.0, self.pitch))
         self._update_camera()
 
 
