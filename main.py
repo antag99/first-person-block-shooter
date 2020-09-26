@@ -176,7 +176,7 @@ class GPUSquare:
         self._cached_square = deepcopy(self.square)
         mat_scale = scale(1 / self.square.extents[0], 1 / self.square.extents[1], 1)
         mat_rotate = rotation(np.cross(self.square.normal, v3(z=1)) *
-                                          angle_between(v3(z=1), self.square.normal))
+                                          angle_between(self.square.normal, v3(z=1)))
         mat_translate = translation(-self.square.position)
         self._cached_transform = np.matmul(np.matmul(mat_scale, mat_rotate), mat_translate)
         return self._cached_transform
