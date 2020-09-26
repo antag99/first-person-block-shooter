@@ -89,8 +89,6 @@ vert = """
 layout(location = 0) in vec2 pixel_coordinates;
 
 precision mediump float;
-//precision mediump vec4;
-//precision mediump mat4;
 
 out lowp vec4 point_color;
 
@@ -132,7 +130,9 @@ void main() {
 
   gl_Position = vec4(pixel_coordinates, 1, 1);
   gl_PointSize = point_size;
-  point_color = vec4(nearest_color, 1);
+  float fog = 450.0;
+  vec3 sampled_color = nearest_color * clamp(1.0 - (nearest_distance / fog) * (nearest_distance / fog), 0.0, 1.0);
+  point_color = vec4(sqrt(sampled_color.x), sqrt(sampled_color.y), sqrt(sampled_color.z), 1);  // gamma correction
 }
 """.replace("MAX_SCENE_SQUARES", str(MAX_SCENE_SQUARES))
 
