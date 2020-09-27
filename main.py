@@ -14,7 +14,7 @@ from math import pi, radians as to_radians, tan, cos, sin, floor, sqrt, ceil, co
 from scipy.spatial.transform import Rotation
 from random import Random
 
-from copy import deepcopy
+from copy import deepcopy, copy
 
 def v2(x=0.0, y=0.0):
     return np.array([x, y], dtype=float)
@@ -493,6 +493,29 @@ class Enemy(Entity):
                                       for room in [current_room] + path_between_rooms]
                     return self.entity.WalkState(self.entity, resulting_path)
 
+    class DyingState:
+        def __init__(self, entity):
+            self.entity = entity
+            self.anim_counter = 0.0
+
+        def __call__(self, dt):
+            self.anim_counter += dt
+            if self.anim_counter > 1.0:
+                self.entity.game_state.entities.remove(self.entity)
+                for sq in self.entity.squares:
+                    self.entity.game_state.scene.delete_square(sq)
+
+            if self.anim_counter < 0.33333:
+                color = v3(1, 0, 0)
+            elif self.anim_counter < 0.66666:
+                color = v3(0, 1, 0)
+            else:
+                color = v3(1, 0, 0)
+            for sq in self.entity.squares:
+                sq.color = color
+
+            return self
+
     class WalkState:
         def __init__(self,
                      entity,
@@ -594,6 +617,12 @@ class Player(Entity):
 
         super().update(dt)
 
+        if self.attack:
+            self.attack = False
+            target = self.game_state.hit_entity(self.eye_pos, self.look_dir)
+            if target is not None:
+                target.current_state = target.DyingState(target)
+
 
 class Controls(Enum):
     MOVE_LEFT = 0
@@ -610,6 +639,7 @@ class GameState:
         occupied_rooms = {(0, 0)}
         self.player.pos = v3(0.5, 0.5, 0) * self.maze.room_size
         self.entities = [self.player]
+        self.scene = None
         random = Random()
         for _ in range(0, 12):
             enemy = Enemy(self)
@@ -622,11 +652,45 @@ class GameState:
                     enemy.pos = v3(room.x + 0.5, room.y + 0.5, 0) * self.maze.room_size
                     break
 
-    def update(self, dt):
+    def hit_entity(self, pos, dir):
+        pos = copy(pos)
+        pos[2] = 0
+        dir = copy(dir)
+        dir[2] = 0
+        dir /= np.linalg.norm(dir)
+        dist_to_wall = self.maze.hit_ray_on_wall(pos, dir)
+
         for entity in self.entities:
+            if isinstance(entity, Enemy):
+                delta = entity.pos - pos
+
+                if dir[0] != 0 and copysign(1.0, delta[0]) == copysign(1.0, dir[0]):
+                    dist_x = delta[0] / dir[0]
+                else:
+                    dist_x = None
+
+                if dir[1] != 0 and copysign(1.0, delta[1]) == copysign(1.0, dir[1]):
+                    dist_y = delta[1] / dir[1]
+                else:
+                    dist_y = None
+
+                if dist_x is not None or dist_y is not None:
+                    min_dist = min(dist_x or 100000, dist_y or 100000)
+                    if min_dist < dist_to_wall:
+                        dest = pos + dir * min_dist
+
+                        # do cylinder rather than bounding box intersection for now at least.
+                        if np.linalg.norm(dest - entity.pos) < entity.width * 0.5:
+                            return entity
+
+        return None
+
+    def update(self, dt):
+        for entity in list(self.entities):  # make a copy of list to handle removal during update.
             entity.update(dt)
 
     def add_squares_to_scene(self, scene):
+        self.scene = scene
         for square in self.maze.to_squares():
             scene.add_square(square)
         for enemy in self.entities:
@@ -658,7 +722,7 @@ class KlossRoyaleWindow(pyglet.window.Window):
             key.A: Controls.MOVE_LEFT,
             key.D: Controls.MOVE_RIGHT,
         }
-        self.mouse_sensitivity = 2 * pi / 320
+        self.mouse_sensitivity = 2 * pi / 500
 
         self.camera = Camera()
         self._update_camera()
@@ -726,6 +790,9 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.game_state.player.pitch += self.mouse_sensitivity * dy
         self.game_state.player.pitch = max(-pi / 2.0, min(pi / 2.0, self.game_state.player.pitch))
         self._update_camera()
+
+    def on_mouse_press(self, x, y, button, modifiers):
+        self.game_state.player.attack = True
 
 
 if __name__ == "__main__":
