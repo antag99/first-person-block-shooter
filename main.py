@@ -3,6 +3,7 @@ import pyglet.gl
 import pyglet.clock
 from pyglet.gl import *
 from pyglet.window import key
+from enum import Enum
 
 import pyshaders
 
@@ -13,6 +14,7 @@ from math import pi, radians as to_radians, tan, cos, sin, floor, sqrt, ceil, co
 from scipy.spatial.transform import Rotation
 from random import Random
 
+from copy import deepcopy
 
 def v2(x=0.0, y=0.0):
     return np.array([x, y], dtype=float)
@@ -136,8 +138,6 @@ void main() {
   point_color = vec4(sqrt(sampled_color.x), sqrt(sampled_color.y), sqrt(sampled_color.z), 1);  // gamma correction
 }
 """.replace("MAX_SCENE_SQUARES", str(MAX_SCENE_SQUARES))
-
-from copy import deepcopy
 
 
 class Square:
@@ -302,6 +302,33 @@ class Maze:
             else:
                 not_completely_connected.remove(room)
 
+    def find_room_with_pos(self, pos):
+        pos_in_room_coords = pos / self.room_size
+        room_x = floor(pos_in_room_coords[0])
+        room_y = floor(pos_in_room_coords[1])
+        return self.rooms_by_coords[room_x, room_y]
+
+    @classmethod
+    def find_path_between_rooms(self, from_room, to_room):
+        visited = set()
+
+        # NOTE: there is only *one* path between two rooms, due to the way the maze is generated.
+        def visit(room, accumulated_path):
+            if room in visited:
+                return None
+
+            visited.add(room)
+
+            if room == to_room:
+                return accumulated_path
+
+            for connected in room.direct_connections:
+                ret = visit(connected, accumulated_path + [connected])
+                if ret:
+                    return ret
+
+        return visit(from_room, [])
+
     def hit_ray_on_wall(self, pos, dir):
         pos_in_room_coords = pos / self.room_size
         room_x = floor(pos_in_room_coords[0])
@@ -342,7 +369,8 @@ class Maze:
                         self.is_connected(room_x, room_y, room_x, room_y + room_offset_y)
 
         if hit_port:  # check collision in the next room...
-            return min_dist + copysign(0.2, min_dist) + self.hit_ray_on_wall(pos + hit_coord + dir * copysign(0.2, min_dist), dir)
+            next_pos = pos + hit_coord + dir * copysign(0.2, min_dist)
+            return np.linalg.norm(next_pos - pos) + self.hit_ray_on_wall(next_pos, dir)
         else:
             return min_dist
 
@@ -410,6 +438,203 @@ class Maze:
         return squares
 
 
+class Entity:
+    def __init__(self, game_state):
+        self.game_state = game_state
+
+        self.pos = v3()
+        self.eye_offset = v3(0, 0, 80)
+        self.eye_pos = v3()
+        self.look_dir = v3(1.0, 0, 0)
+        self.movement_speed = 400.0
+        self.extent = v3()
+
+    def update(self, dt):
+        self.eye_pos = self.pos + self.eye_offset
+
+
+class Enemy(Entity):
+    def __init__(self, game_state):
+        super().__init__(game_state)
+
+        self.random = Random()
+
+        self.target_room = None
+
+        self.shoot_counter = 0.0
+        self.shoot_delay = 0.8
+
+        self.time_since_last_saw_player = 100000
+
+        self.width = 40.0
+        self.height = 100.0
+
+        self.extent = v3(self.width, self.width, self.height)
+        self.squares = [
+            Square(normal=v3(0, 1, 0), extents=v2(self.height, self.width) * 0.5, color=v3(0, 1, 0)),
+            Square(normal=v3(0, -1, 0), extents=v2(self.height, self.width) * 0.5, color=v3(0, 1, 0)),
+            Square(normal=v3(1, 0, 0), extents=v2(self.width, self.height) * 0.5, color=v3(0, 1, 0)),
+            Square(normal=v3(-1, 0, 0), extents=v2(self.width, self.height) * 0.5, color=v3(0, 1, 0)),
+        ]
+
+        self.current_state = self.IdleState(self)
+
+    class IdleState:
+        def __init__(self, entity):
+            self.entity = entity
+
+        def __call__(self, dt):
+            current_room = self.entity.game_state.maze.find_room_with_pos(self.entity.pos)
+            while True:
+                random_room = self.entity.random.choice(self.entity.game_state.maze.rooms)
+                if random_room is not current_room:
+                    path_between_rooms = self.entity.game_state.maze.find_path_between_rooms(current_room, random_room)
+                    resulting_path = [v3(room.x + 0.5, room.y + 0.5, 0) * self.entity.game_state.maze.room_size
+                                      for room in [current_room] + path_between_rooms]
+                    return self.entity.WalkState(self.entity, resulting_path)
+
+    class WalkState:
+        def __init__(self,
+                     entity,
+                     position_queue):
+            self.entity = entity
+            self.position_queue = position_queue
+
+        def __call__(self, dt):
+            if len(self.position_queue) == 0:
+                return self.entity.IdleState(self.entity)
+
+            to_pos = self.position_queue[0]
+
+            current_delta = to_pos - self.entity.pos
+            current_dist = np.linalg.norm(current_delta)
+
+            walk_dist = self.entity.movement_speed * dt
+            if walk_dist < current_dist:
+                self.entity.pos += (current_delta / current_dist) * walk_dist
+            else:
+                self.entity.pos = to_pos
+                self.position_queue = self.position_queue[1:]
+                return self(dt - current_dist / self.entity.movement_speed)
+
+            return self
+
+    def _update_square_transforms(self):
+        for i, angle in ((0, 0), (1, pi), (2, pi * 0.5), (3, -pi*0.5)):
+            self.squares[i].normal = Rotation.from_euler('z', angle).apply(v3(1, 0, 0))
+            self.squares[i].position = self.pos + self.squares[i].normal * self.width * 0.5 + v3(z = self.height * 0.5)
+
+    class Target:
+        def __init__(self, my_entity, target_entity):
+            self.my_entity = my_entity
+            self.target_entity = target_entity
+
+        @property
+        def delta_to_target(self):
+            return self.target_entity.pos - self.my_entity.pos
+
+        @property
+        def distance_to_target(self):
+            return np.linalg.norm(self.delta_to_target)
+
+        @property
+        def direction_to_target(self):
+            return self.delta_to_target / self.distance_to_target
+
+        @property
+        def distance_to_wall_in_direction_of_target(self):
+            return self.my_entity.game_state.maze.hit_ray_on_wall(self.my_entity.pos, self.direction_to_target)
+
+        @property
+        def can_spot_target(self):
+            return self.distance_to_target < self.distance_to_wall_in_direction_of_target
+
+    def update(self, dt):
+        self.current_state = self.current_state(dt) or self.IdleState(self)
+        self._update_square_transforms()
+        super().update(dt)
+
+
+class Player(Entity):
+    def __init__(self, game_state):
+        super().__init__(game_state)
+
+        self.eye_pos = v3()
+        self.eye_offset = v3(0, 0, 80)
+
+        self.active_controls = set()
+
+        self.attack = False
+
+        self.yaw = 0.0
+        self.pitch = 0.0
+
+        self.control_to_movement_dir = [
+            (Controls.MOVE_FORWARDS, v3(1, 0, 0)),
+            (Controls.MOVE_LEFT, v3(0, 1, 0)),
+            (Controls.MOVE_BACKWARDS, v3(-1, 0, 0)),
+            (Controls.MOVE_RIGHT, v3(0, -1, 0)),
+        ]
+
+    def update(self, dt):
+        self.look_dir = v3(cos(self.yaw) * cos(self.pitch), sin(self.yaw) * cos(self.pitch), sin(self.pitch))
+
+        movement_dir_rel_to_facing = sum((dir for control, dir in self.control_to_movement_dir
+                                          if control in self.active_controls), v3())
+        if not np.array_equal(movement_dir_rel_to_facing, v3()):
+            movement_dir = Rotation.from_euler('Z', self.yaw).apply(movement_dir_rel_to_facing)
+            movement_distance = self.movement_speed * dt
+
+            distance_to_collision = self.game_state.maze.hit_ray_on_wall(self.pos, movement_dir)
+
+            if movement_distance > distance_to_collision:
+                movement_distance = distance_to_collision - 0.01
+
+            self.pos += movement_dir * movement_distance
+
+        super().update(dt)
+
+
+class Controls(Enum):
+    MOVE_LEFT = 0
+    MOVE_RIGHT = 1
+    MOVE_FORWARDS = 2
+    MOVE_BACKWARDS = 3
+
+
+class GameState:
+
+    def __init__(self):
+        self.maze = Maze()
+        self.player = Player(self)
+        occupied_rooms = {(0, 0)}
+        self.player.pos = v3(0.5, 0.5, 0) * self.maze.room_size
+        self.entities = [self.player]
+        random = Random()
+        for _ in range(0, 12):
+            enemy = Enemy(self)
+            self.entities.append(enemy)
+            while True:
+                room = random.choice(self.maze.rooms)
+                pos = (room.x, room.y)
+                if pos not in occupied_rooms:
+                    occupied_rooms.add(pos)
+                    enemy.pos = v3(room.x + 0.5, room.y + 0.5, 0) * self.maze.room_size
+                    break
+
+    def update(self, dt):
+        for entity in self.entities:
+            entity.update(dt)
+
+    def add_squares_to_scene(self, scene):
+        for square in self.maze.to_squares():
+            scene.add_square(square)
+        for enemy in self.entities:
+            if isinstance(enemy, Enemy):
+                for square in enemy.squares:
+                    scene.add_square(square)
+
+
 class KlossRoyaleWindow(pyglet.window.Window):
     def __init__(self, **kwargs):
         super(KlossRoyaleWindow, self).__init__(**kwargs)
@@ -423,34 +648,25 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.pixel_vertices = None
         self._build_vertex_list()
 
-        self.maze = Maze()
         self.scene = Scene()
+        self.game_state = GameState()
+        self.game_state.add_squares_to_scene(self.scene)
 
-        for s in self.maze.to_squares():
-            self.scene.add_square(s)
-
-        self.controls = [
-            (key.W, v3(1, 0, 0)),
-            (key.A, v3(0, 1, 0)),
-            (key.S, v3(-1, 0, 0)),
-            (key.D, v3(0, -1, 0)),
-        ]
-        self.yaw = 0
-        self.pitch = 0
-        self.eye_pos = v3(20, 20, 80)
+        self.controls_by_key = {
+            key.W: Controls.MOVE_FORWARDS,
+            key.S: Controls.MOVE_BACKWARDS,
+            key.A: Controls.MOVE_LEFT,
+            key.D: Controls.MOVE_RIGHT,
+        }
         self.mouse_sensitivity = 2 * pi / 320
-        self.active_keys = set()
 
         self.camera = Camera()
         self._update_camera()
         pyglet.clock.schedule(self.update, .1)
 
-    def _compute_look_at_direction(self):
-        return v3(cos(self.yaw) * cos(self.pitch), sin(self.yaw) * cos(self.pitch), sin(self.pitch))
-
     def _update_camera(self):
-        self.camera.position = self.eye_pos
-        self.camera.direction = self._compute_look_at_direction()
+        self.camera.position = self.game_state.player.eye_pos
+        self.camera.direction = self.game_state.player.look_dir
         self.camera.up = v3(0, 0, 1)
         self.camera.update_view_basis()
 
@@ -482,20 +698,7 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.pixel_size = pixel_size
 
     def update(self, dt, _desired_dt):
-        move_direction = sum((control[1] for control in self.controls if control[0] in self.active_keys), v3())
-        if np.array_equal(move_direction, v3()):
-            return
-
-        source = self.eye_pos
-        dir = Rotation.from_euler('z', self.yaw).apply(move_direction)
-        dist = 400 * dt
-
-        max_dist = self.maze.hit_ray_on_wall(source, dir)
-
-        if dist > max_dist:
-            dist = max_dist - 0.01
-
-        self.eye_pos += dist * dir
+        self.game_state.update(dt)
         self._update_camera()
 
     def on_draw(self):
@@ -506,16 +709,22 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.pixel_vertices.draw(GL_POINTS)
 
     def on_key_press(self, symbol, modifiers):
-        self.active_keys.add(symbol)
+        try:
+            self.game_state.player.active_controls.add(self.controls_by_key[symbol])
+        except KeyError:
+            pass
 
     def on_key_release(self, symbol, modifiers):
-        self.active_keys.discard(symbol)
+        try:
+            self.game_state.player.active_controls.discard(self.controls_by_key[symbol])
+        except KeyError:
+            pass
 
     def on_mouse_motion(self, x, y, dx, dy):
-        self.yaw -= self.mouse_sensitivity * dx
-        self.yaw %= 2 * pi
-        self.pitch += self.mouse_sensitivity * dy
-        self.pitch = max(-pi / 2.0, min(pi / 2.0, self.pitch))
+        self.game_state.player.yaw -= self.mouse_sensitivity * dx
+        self.game_state.player.yaw %= 2 * pi
+        self.game_state.player.pitch += self.mouse_sensitivity * dy
+        self.game_state.player.pitch = max(-pi / 2.0, min(pi / 2.0, self.game_state.player.pitch))
         self._update_camera()
 
 
