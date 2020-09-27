@@ -429,7 +429,12 @@ class Enemy(Entity):
         self.extent = v3(self.width, self.width, self.height)
         self.color = v3(0, 1, 0)
         self.current_state = self.IdleState(self)
-        self.movement_speed = 200
+        self.normal_speed = 200
+        self.chasing_speed = 300
+        self.movement_speed = self.normal_speed
+        self.sight_distance = 400
+        self.time_from_sight_to_shot = 1.2
+        self.target = self.Target(self, game_state.player)
 
     def to_squares(self):
         transforms = []
@@ -447,6 +452,7 @@ class Enemy(Entity):
             self.entity = entity
 
         def __call__(self, dt):
+            self.entity.movement_speed = self.entity.normal_speed
             current_room = self.entity.game_state.maze.find_room_with_pos(self.entity.pos)
             while True:
                 random_room = self.entity.random.choice(self.entity.game_state.maze.rooms)
@@ -465,6 +471,7 @@ class Enemy(Entity):
             self.anim_counter += dt
             if self.anim_counter > 1.0:
                 self.entity.game_state.entities.remove(self.entity)
+                self.entity.game_state.enemies_eliminated += 1
 
             if self.anim_counter < 0.33333:
                 self.entity.color = v3(1, 0, 0)
@@ -483,6 +490,9 @@ class Enemy(Entity):
             self.position_queue = position_queue
 
         def __call__(self, dt):
+            if self.entity.target.can_spot_target:
+                return self.entity.TargetingPlayerState(self.entity)
+
             if len(self.position_queue) == 0:
                 return self.entity.IdleState(self.entity)
 
@@ -500,6 +510,25 @@ class Enemy(Entity):
                 return self(dt - current_dist / self.entity.movement_speed)
 
             return self
+
+    class TargetingPlayerState:
+        def __init__(self, entity):
+            self.entity = entity
+            self.aiming_time = 0.0
+
+        def __call__(self, dt):
+            if self.entity.target.can_spot_target:
+                self.aiming_time += dt
+                if self.aiming_time > self.entity.time_from_sight_to_shot:
+                    self.entity.game_state.game_over = True
+                return self
+            else:  # chase player one room
+                self.entity.movement_speed = self.entity.chasing_speed
+                maze = self.entity.game_state.maze
+                my_room = maze.find_room_with_pos(self.entity.pos)
+                target_room = maze.find_room_with_pos(self.entity.target.target_entity.pos)
+                path = maze.find_path_between_rooms(my_room, target_room)
+                return self.entity.WalkState(self.entity, [v3(room.x + 0.5, room.y + 0.5, 0) * maze.room_size for room in path])
 
     class Target:
         def __init__(self, my_entity, target_entity):
@@ -524,7 +553,7 @@ class Enemy(Entity):
 
         @property
         def can_spot_target(self):
-            return self.distance_to_target < self.distance_to_wall_in_direction_of_target
+            return self.distance_to_target < min(self.distance_to_wall_in_direction_of_target, self.my_entity.sight_distance)
 
     @property
     def is_dying(self):
@@ -590,15 +619,17 @@ class Controls(Enum):
 
 class GameState:
 
-    def __init__(self):
+    def __init__(self, enemy_count=12):
         self.maze = Maze(self)
         self.player = Player(self)
         occupied_rooms = {(0, 0)}
         self.player.pos = v3(0.5, 0.5, 0) * self.maze.room_size
         self.entities = [self.maze, self.player]
-        self.scene = None
+        self.game_over = False
+        self.enemy_count = enemy_count
+        self.enemies_eliminated = 0
         random = Random()
-        for _ in range(0, 12):
+        for _ in range(0, enemy_count):
             enemy = Enemy(self)
             self.entities.append(enemy)
             while True:
@@ -608,6 +639,14 @@ class GameState:
                     occupied_rooms.add(pos)
                     enemy.pos = v3(room.x + 0.5, room.y + 0.5, 0) * self.maze.room_size
                     break
+
+    @property
+    def game_finished(self):
+        return self.game_over or self.enemy_count == self.enemies_eliminated
+
+    @property
+    def victory(self):
+        return self.enemy_count == self.enemies_eliminated
 
     def hit_entity(self, pos, dir):
         min_dist = 1000000
@@ -638,8 +677,9 @@ class KlossRoyaleWindow(pyglet.window.Window):
 
         glEnable(GL_VERTEX_PROGRAM_POINT_SIZE)
 
+        self.paused = False
+
         self.shader = pyshaders.from_string(vert, frag)
-        self.shader.use()
 
         self.pixel_size = 1
         self.pixel_vertices = None
@@ -657,6 +697,8 @@ class KlossRoyaleWindow(pyglet.window.Window):
 
         self.camera = Camera()
         self._update_camera()
+        self.progress_label = pyglet.text.Label(".", font_name="Arial", font_size=16, bold=True)
+        self.game_end_label = pyglet.text.Label(".", font_name="Arial", font_size=16, bold=True)
         pyglet.clock.schedule(self.update, .1)
 
     def _update_camera(self):
@@ -693,11 +735,16 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.pixel_size = pixel_size
 
     def update(self, dt, _desired_dt):
-        self.game_state.update(dt)
+        if not self.game_state.game_finished:
+            if not self.paused:
+                self.game_state.update(dt)
+            self.progress_label.text = f"ENEMY ELIMINATION: {floor(self.game_state.enemies_eliminated * 100 / self.game_state.enemy_count)}%"
         self._update_camera()
+        self.set_exclusive_mouse(not self.paused and not self.game_state.game_finished)
 
     def on_draw(self):
         self.clear()
+        self.shader.use()
         self.shader.uniforms.point_size = self.pixel_size
         self.camera.update_shader_uniforms(self.shader)
 
@@ -706,17 +753,35 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.shader.uniforms.xy_square_transforms = tuple(tuple(tuple(r for r in s.transform)) for s in squares)
         self.shader.uniforms.xy_square_colors = tuple(tuple(s.color) for s in squares)
 
-        self.shader.uniforms.crosshair_size = 20
+        self.shader.uniforms.crosshair_size = 20 if not (self.game_state.game_finished or self.paused) else 0
         self.shader.uniforms.crosshair_t = 2
         self.shader.uniforms.crosshair_location = (self.get_viewport_size()[0] * 0.5, self.get_viewport_size()[1] * 0.5)
 
         self.pixel_vertices.draw(GL_POINTS)
+        self.shader.clear()
+
+        window_w, window_h = self.get_viewport_size()
+        if self.game_state.game_finished or self.paused:
+            if self.game_state.game_finished:
+                self.game_end_label.text = "VICTORY" if self.game_state.victory else "YOU WERE SHOT. GAME OVER."
+            else:
+                self.game_end_label.text = "PAUSED"
+            self.game_end_label.x = (window_w-self.game_end_label.content_width)*0.5
+            self.game_end_label.y = (window_h-self.game_end_label.content_height)*0.5
+            self.game_end_label.draw()
+        else:
+            self.progress_label.x = window_w - max(self.progress_label.content_width, 100)
+            self.progress_label.y = window_h - self.progress_label.content_height
+            self.progress_label.draw()
 
     def on_key_press(self, symbol, modifiers):
         try:
             self.game_state.player.active_controls.add(self.controls_by_key[symbol])
         except KeyError:
             pass
+
+        if symbol == key.SPACE:
+            self.paused = not self.paused
 
     def on_key_release(self, symbol, modifiers):
         try:
@@ -739,5 +804,4 @@ if __name__ == "__main__":
     window = KlossRoyaleWindow(visible=True, resizable=True)
     window.set_mouse_visible(False)
     window.set_exclusive_mouse(True)
-    # window.set_fullscreen(True)
     pyglet.app.run()
