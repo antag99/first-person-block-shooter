@@ -86,11 +86,23 @@ MAX_SCENE_SQUARES = 512
 frag = """
 #version 300 es
 
+precision mediump float;
+
+uniform vec2 crosshair_location;
+uniform float crosshair_size;
+uniform float crosshair_t;
+
 in lowp vec4 point_color;
 out lowp vec4 output_color;
 
 void main() {
-  output_color = point_color;
+  vec2 diff = crosshair_location - gl_FragCoord.xy;
+  if (abs(diff.x) <= crosshair_size * 0.5 && abs(diff.y) <= crosshair_size * 0.5 &&
+      (abs(diff.x) <= crosshair_t*0.5 || abs(diff.y) <= crosshair_t*0.5)) {
+    output_color = vec4(1, 1, 1, 1);
+  } else {
+    output_color = point_color;
+  }
 }
 """
 
@@ -693,6 +705,10 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.shader.uniforms.xy_squares_count = len(squares)
         self.shader.uniforms.xy_square_transforms = tuple(tuple(tuple(r for r in s.transform)) for s in squares)
         self.shader.uniforms.xy_square_colors = tuple(tuple(s.color) for s in squares)
+
+        self.shader.uniforms.crosshair_size = 20
+        self.shader.uniforms.crosshair_t = 2
+        self.shader.uniforms.crosshair_location = (self.get_viewport_size()[0] * 0.5, self.get_viewport_size()[1] * 0.5)
 
         self.pixel_vertices.draw(GL_POINTS)
 
