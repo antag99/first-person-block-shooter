@@ -249,12 +249,12 @@ class Room:
         self.direct_connections = []
         self.adjacent_rooms = []
 
-    def compute_reachable(self, reachable_set):
-        if self in reachable_set:
+    def compute_reachable(self, test, accumulate):
+        if test(self):
             return
-        reachable_set.add(self)
+        accumulate(self)
         for connected_room in self.direct_connections:
-            connected_room.compute_reachable(reachable_set)
+            connected_room.compute_reachable(test, accumulate)
 
 
 class Maze:
@@ -286,17 +286,17 @@ class Maze:
                                        and j + joff in range(0, 8)
                                        and abs(ioff) + abs(joff) == 1]
 
-        random = Random(42)
+        random = Random()
 
         not_completely_connected = list(self.rooms)
 
         while len(not_completely_connected) > 0:
             room = random.choice(not_completely_connected)
-            reachable = set()
-            room.compute_reachable(reachable)
-            non_reachable_adjacent = set(room.adjacent_rooms) - reachable
+            reachable = list()
+            room.compute_reachable(reachable.__contains__, reachable.append)
+            non_reachable_adjacent = [adjacent for adjacent in room.adjacent_rooms if adjacent not in reachable]
             if len(non_reachable_adjacent) > 0:
-                room_connected = random.choice(list(non_reachable_adjacent))
+                room_connected = random.choice(non_reachable_adjacent)
                 room.direct_connections.append(room_connected)
                 room_connected.direct_connections.append(room)
             else:
