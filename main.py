@@ -1,15 +1,19 @@
+import operator
+from functools import reduce
+
 import pyglet
 import pyglet.gl
 import pyglet.clock
 from pyglet.gl import *
 from pyglet.window import key
 from enum import Enum
+from collections import namedtuple
 
 import pyshaders
 
 import numpy as np
 
-from math import pi, radians as to_radians, tan, cos, sin, floor, sqrt, ceil, copysign
+from math import pi, radians as to_radians, tan, cos, sin, floor, sqrt, ceil, copysign, atan2
 
 from scipy.spatial.transform import Rotation
 from random import Random
@@ -52,8 +56,12 @@ def translation(by_v):
     ], dtype=float)
 
 
-def rotation(rotvec):
+def rotation_from_rotvec(rotvec):
     return as_affine(Rotation.from_rotvec(rotvec).as_matrix())
+
+
+def rotation_from_euler(x=0.0, y=0.0, z=0.0):
+    return as_affine(Rotation.from_euler('xyz', (x, y, z)).as_matrix())
 
 
 idt = np.array([
@@ -64,7 +72,7 @@ idt = np.array([
 ], dtype=float)
 
 
-def scale(x=1, y=1, z=1):
+def scale(x=1.0, y=1.0, z=1.0):
     return np.array([
         [x, 0, 0, 0],
         [0, y, 0, 0],
@@ -123,7 +131,7 @@ void main() {
       float dist_to_xy_plane = -projected_ray_pos.z / projected_ray_dir.z;
       if (nearest_distance > dist_to_xy_plane && dist_to_xy_plane > 0.01) {
         vec4 hit_on_xy_plane = projected_ray_pos + projected_ray_dir * dist_to_xy_plane;
-        if (hit_on_xy_plane.x >= -1.0 && hit_on_xy_plane.x <= 1.0 && hit_on_xy_plane.y >= -1.0 && hit_on_xy_plane.y <= 1.0) {
+        if (hit_on_xy_plane.x >= 0.0 && hit_on_xy_plane.x <= 1.0 && hit_on_xy_plane.y >= 0.0 && hit_on_xy_plane.y <= 1.0) {
           nearest_distance = dist_to_xy_plane;
           nearest_color = xy_square_colors[i];
         }
@@ -140,48 +148,7 @@ void main() {
 """.replace("MAX_SCENE_SQUARES", str(MAX_SCENE_SQUARES))
 
 
-class Square:
-    def __init__(self, position=None, normal=None, extents=None, color=None):
-        self.position = position if position is not None else v3()
-        self.normal = normal if normal is not None else v3(0, 0, 1)
-        self.extents = extents if extents is not None else v2(1, 1)
-        assert self.extents[0] > 0 and self.extents[1] > 0
-        self.color = color if color is not None else v3(1.0, 0.0, 0.0)
-
-    def has_same_transform_as(self, o) -> bool:
-        return o is not None and \
-               np.array_equal(self.position, o.position) and \
-               np.array_equal(self.normal, o.normal) and \
-               np.array_equal(self.extents, o.extents)
-
-
-class GPUSquare:
-    def __init__(self, square):
-        self.square = square
-        self._cached_square = None
-        self._cached_transform = None
-
-    def compute_transform(self):
-        if self.square.has_same_transform_as(self._cached_square):
-            return self._cached_transform
-
-        # subroutines from https://stackoverflow.com/a/13849249
-
-        def unit_vector(vector):
-            return vector / np.linalg.norm(vector)
-
-        def angle_between(v1, v2):
-            v1_u = unit_vector(v1)
-            v2_u = unit_vector(v2)
-            return np.arccos(np.clip(np.dot(v1_u, v2_u), -1.0, 1.0))
-
-        self._cached_square = deepcopy(self.square)
-        mat_scale = scale(1 / self.square.extents[0], 1 / self.square.extents[1], 1)
-        mat_rotate = rotation(np.cross(self.square.normal, v3(z=1)) *
-                                          angle_between(self.square.normal, v3(z=1)))
-        mat_translate = translation(-self.square.position)
-        self._cached_transform = np.matmul(np.matmul(mat_scale, mat_rotate), mat_translate)
-        return self._cached_transform
+Square = namedtuple('Square', 'transform color')
 
 
 class Camera:
@@ -192,7 +159,7 @@ class Camera:
         self.up = v3(0, 1, 0)
         self.viewport_size = v2(80, 60)
         self.screen_resolution = v2(800, 600)
-        self.fov = 60
+        self.fov = 120
 
         self._cached_view_origin = v4()
         self._cached_view_x = v4(w=0)
@@ -213,33 +180,13 @@ class Camera:
 
         self._cached_view_x = v4_dir(basis_x * view_scale_x)
         self._cached_view_y = v4_dir(basis_y * view_scale_y)
-        self._cached_view_origin = v4_pos(self.position + self.direction * tan(to_radians(self.fov)) * 0.5 * self.viewport_size[0])
+        self._cached_view_origin = v4_pos(self.position + self.direction * self.viewport_size[0] * 0.5 / tan(to_radians(self.fov * 0.5)))
 
     def update_shader_uniforms(self, shader):
         shader.uniforms.eye_pos = tuple(v4_pos(self.position))
         shader.uniforms.view_origin = tuple(self._cached_view_origin)
         shader.uniforms.view_x = tuple(self._cached_view_x)
         shader.uniforms.view_y = tuple(self._cached_view_y)
-
-
-class Scene:
-    def __init__(self):
-        self._gpu_squares = []
-
-    def add_square(self, square):
-        self._gpu_squares.append(GPUSquare(square))
-
-    def delete_square(self, square):
-        self._gpu_squares = [s for s in self._gpu_squares if s.square is not square]
-
-    def update_shader_uniforms(self, shader):
-        gpu_squares = self._gpu_squares
-        if len(gpu_squares) > MAX_SCENE_SQUARES:
-            print("WARNING: max squares exceeded!")
-            gpu_squares = gpu_squares[:MAX_SCENE_SQUARES]
-        shader.uniforms.xy_squares_count = len(gpu_squares)
-        shader.uniforms.xy_square_transforms = tuple(tuple(tuple(r for r in s.compute_transform())) for s in gpu_squares)
-        shader.uniforms.xy_square_colors = tuple(tuple(s.square.color) for s in gpu_squares)
 
 
 class Room:
@@ -257,15 +204,34 @@ class Room:
             connected_room.compute_reachable(test, accumulate)
 
 
-class Maze:
+class Entity:
+    def __init__(self, game_state):
+        self.game_state = game_state
 
-    def __init__(self):
+        self.pos = v3()
+        self.eye_offset = v3(0, 0, 80)
+        self.eye_pos = v3()
+        self.look_dir = v3(1.0, 0, 0)
+        self.movement_speed = 400.0
+        self.extent = v3()
+
+    def update(self, dt):
+        self.eye_pos = self.pos + self.eye_offset
+
+    def to_squares(self):
+        return []
+
+
+class Maze(Entity):
+
+    def __init__(self, game_state):
+        super().__init__(game_state)
         self.maze_size = 3200.0
         self.room_size = self.maze_size / 8.0
 
         self.port_width = self.room_size * 0.2
         self.port_height = 120.0
-        self.wall_height = 200
+        self.wall_height = 800
 
         self.rooms = []
         self.rooms_by_coords = dict()
@@ -301,6 +267,8 @@ class Maze:
                 room_connected.direct_connections.append(room)
             else:
                 not_completely_connected.remove(room)
+
+        self._cached_squares = None
 
     def find_room_with_pos(self, pos):
         pos_in_room_coords = pos / self.room_size
@@ -382,9 +350,27 @@ class Maze:
                    for r in self.rooms_by_coords[fx, fy].direct_connections)
 
     def to_squares(self):
+        if self._cached_squares is None:
+            self._cached_squares = self.generate_squares()
+        return self._cached_squares
 
-        squares = [Square(position=v3(self.maze_size, self.maze_size) * 0.5,
-                          extents=v2(self.maze_size, self.maze_size) * 0.5, color=v3(0.2, 0.2, 0.2))]
+    def generate_squares(self):
+        squares = [Square(transform=scale(1/self.maze_size, 1/self.maze_size, 1), color=v3(0.2, 0.2, 0.2))]
+
+        def square_between(pos0, pos1):
+            delta = pos1 - pos0
+            delta_xy = delta * v3(1, 1, 0)
+            delta_z = delta * v3(0, 0, 1)
+            width = np.linalg.norm(delta_xy)
+            height = np.linalg.norm(delta_z)
+            rot_z = atan2(delta_xy[1], delta_xy[0])
+
+            mat_translate = translation(-pos0)
+            mat_rotate_to_xz = rotation_from_euler(z=-rot_z)
+            mat_rotate_to_xy = rotation_from_euler(x=-pi/2)
+            mat_scale = scale(1/width, 1/height)
+
+            return Square(transform=np.matmul(mat_scale, np.matmul(mat_rotate_to_xy, np.matmul(mat_rotate_to_xz, mat_translate))), color=v3(1, 0, 0))
 
         left_wall_begin_pos = v3(0, 0, 0)
         for i in range(0, 9):
@@ -397,18 +383,10 @@ class Maze:
                     new_begin_pos = v3(i, j + 0.5) * self.room_size + v3(0, self.port_width * 0.5)
 
                 if self.is_connected(i, j, i - 1, j) or j == 8:
-                    squares.append(Square(
-                        position=(left_wall_end_pos + left_wall_begin_pos) * 0.5,
-                        extents=v2(left_wall_end_pos[2] - left_wall_begin_pos[2],
-                                   left_wall_end_pos[1] - left_wall_begin_pos[1]) * 0.5,
-                        normal=v3(1, 0, 0)))
-                    if self.is_connected(i, j, i - 1, j):
-                        squares.append(Square(
-                            position=(new_begin_pos + left_wall_end_pos) * 0.5 + v3(0, 0, self.wall_height*0.5 - (self.wall_height - self.port_height) * 0.5),
-                            extents=v2((self.wall_height - self.port_height) * 0.5,
-                                       self.port_width * 0.5),
-                            normal=v3(1, 0, 0)))
+                    squares.append(square_between(left_wall_begin_pos, left_wall_end_pos))
                     left_wall_begin_pos = new_begin_pos
+                    if self.is_connected(i, j, i - 1, j):
+                        squares.append(square_between(left_wall_end_pos + v3(z=self.port_height-self.wall_height), new_begin_pos + v3(z=self.wall_height)))
 
         bottom_wall_begin_pos = v3(0, 0, 0)
         for j in range(0, 9):
@@ -423,61 +401,34 @@ class Maze:
                 has_port = self.is_connected(i, j, i, j - 1)
 
                 if has_port or i == 8:
-                    squares.append(Square(
-                        position=(bottom_wall_end_pos + bottom_wall_begin_pos) * 0.5,
-                        extents=v2(bottom_wall_end_pos[0] - bottom_wall_begin_pos[0],
-                                   bottom_wall_end_pos[2] - bottom_wall_begin_pos[2]) * 0.5,
-                        normal=v3(0, 1, 0)))
+                    squares.append(square_between(bottom_wall_begin_pos, bottom_wall_end_pos))
                     if self.is_connected(i, j, i, j - 1):
-                        squares.append(Square(
-                            position=(new_begin_pos + bottom_wall_end_pos) * 0.5 + v3(0, 0, self.wall_height*0.5 - (self.wall_height - self.port_height) * 0.5),
-                            extents=v2((self.wall_height - self.port_height) * 0.5,
-                                       self.port_width * 0.5),
-                            normal=v3(0, 1, 0)))
+                        squares.append(square_between(bottom_wall_end_pos + v3(z=self.port_height-self.wall_height), new_begin_pos + v3(z=self.wall_height)))
                     bottom_wall_begin_pos = new_begin_pos
         return squares
-
-
-class Entity:
-    def __init__(self, game_state):
-        self.game_state = game_state
-
-        self.pos = v3()
-        self.eye_offset = v3(0, 0, 80)
-        self.eye_pos = v3()
-        self.look_dir = v3(1.0, 0, 0)
-        self.movement_speed = 400.0
-        self.extent = v3()
-
-    def update(self, dt):
-        self.eye_pos = self.pos + self.eye_offset
 
 
 class Enemy(Entity):
     def __init__(self, game_state):
         super().__init__(game_state)
-
         self.random = Random()
-
-        self.target_room = None
-
-        self.shoot_counter = 0.0
-        self.shoot_delay = 0.8
-
-        self.time_since_last_saw_player = 100000
-
         self.width = 40.0
         self.height = 100.0
-
         self.extent = v3(self.width, self.width, self.height)
-        self.squares = [
-            Square(normal=v3(0, 1, 0), extents=v2(self.height, self.width) * 0.5, color=v3(0, 1, 0)),
-            Square(normal=v3(0, -1, 0), extents=v2(self.height, self.width) * 0.5, color=v3(0, 1, 0)),
-            Square(normal=v3(1, 0, 0), extents=v2(self.width, self.height) * 0.5, color=v3(0, 1, 0)),
-            Square(normal=v3(-1, 0, 0), extents=v2(self.width, self.height) * 0.5, color=v3(0, 1, 0)),
-        ]
-
+        self.color = v3(0, 1, 0)
         self.current_state = self.IdleState(self)
+        self.movement_speed = 200
+
+    def to_squares(self):
+        transforms = []
+        for i in range(0, 4):
+            mat_translate = translation(-self.pos)
+            mat_rotate_0 = rotation_from_euler(z=pi*i/2)
+            mat_translate_2 = translation(v3(-self.width * 0.5, self.width*0.5))
+            mat_rotate = rotation_from_euler(y=pi/2)
+            mat_scale = scale(1.0/self.height, 1.0/self.width, 1.0)
+            transforms.append(np.matmul(mat_scale, np.matmul(mat_rotate, np.matmul(mat_translate_2, np.matmul(mat_rotate_0, mat_translate)))))
+        return [Square(transform, self.color) for transform in transforms]
 
     class IdleState:
         def __init__(self, entity):
@@ -502,17 +453,13 @@ class Enemy(Entity):
             self.anim_counter += dt
             if self.anim_counter > 1.0:
                 self.entity.game_state.entities.remove(self.entity)
-                for sq in self.entity.squares:
-                    self.entity.game_state.scene.delete_square(sq)
 
             if self.anim_counter < 0.33333:
-                color = v3(1, 0, 0)
+                self.entity.color = v3(1, 0, 0)
             elif self.anim_counter < 0.66666:
-                color = v3(0, 1, 0)
+                self.entity.color = v3(0, 1, 0)
             else:
-                color = v3(1, 0, 0)
-            for sq in self.entity.squares:
-                sq.color = color
+                self.entity.color = v3(1, 0, 0)
 
             return self
 
@@ -542,11 +489,6 @@ class Enemy(Entity):
 
             return self
 
-    def _update_square_transforms(self):
-        for i, angle in ((0, 0), (1, pi), (2, pi * 0.5), (3, -pi*0.5)):
-            self.squares[i].normal = Rotation.from_euler('z', angle).apply(v3(1, 0, 0))
-            self.squares[i].position = self.pos + self.squares[i].normal * self.width * 0.5 + v3(z = self.height * 0.5)
-
     class Target:
         def __init__(self, my_entity, target_entity):
             self.my_entity = my_entity
@@ -572,9 +514,12 @@ class Enemy(Entity):
         def can_spot_target(self):
             return self.distance_to_target < self.distance_to_wall_in_direction_of_target
 
+    @property
+    def is_dying(self):
+        return self.current_state is self.DyingState
+
     def update(self, dt):
         self.current_state = self.current_state(dt) or self.IdleState(self)
-        self._update_square_transforms()
         super().update(dt)
 
 
@@ -619,8 +564,8 @@ class Player(Entity):
 
         if self.attack:
             self.attack = False
-            target = self.game_state.hit_entity(self.eye_pos, self.look_dir)
-            if target is not None:
+            target, dist = self.game_state.hit_entity(self.eye_pos, self.look_dir)
+            if isinstance(target, Enemy) and not target.is_dying:
                 target.current_state = target.DyingState(target)
 
 
@@ -634,11 +579,11 @@ class Controls(Enum):
 class GameState:
 
     def __init__(self):
-        self.maze = Maze()
+        self.maze = Maze(self)
         self.player = Player(self)
         occupied_rooms = {(0, 0)}
         self.player.pos = v3(0.5, 0.5, 0) * self.maze.room_size
-        self.entities = [self.player]
+        self.entities = [self.maze, self.player]
         self.scene = None
         random = Random()
         for _ in range(0, 12):
@@ -653,50 +598,26 @@ class GameState:
                     break
 
     def hit_entity(self, pos, dir):
-        pos = copy(pos)
-        pos[2] = 0
-        dir = copy(dir)
-        dir[2] = 0
-        dir /= np.linalg.norm(dir)
-        dist_to_wall = self.maze.hit_ray_on_wall(pos, dir)
+        min_dist = 1000000
+        nearest_entity = None
 
         for entity in self.entities:
-            if isinstance(entity, Enemy):
-                delta = entity.pos - pos
+            for square in entity.to_squares():
+                transformed_pos = np.matmul(square.transform, v4_pos(pos))
+                transformed_dir = np.matmul(square.transform, v4_dir(dir))
+                if transformed_dir[2] != 0:
+                    dist = -transformed_pos[2] / transformed_dir[2]
+                    if 0 < dist < min_dist:
+                        dest = transformed_dir * dist + transformed_pos
+                        if 0 <= dest[0] < 1 and 0 <= dest[1] < 1:
+                            min_dist = dist
+                            nearest_entity = entity
 
-                if dir[0] != 0 and copysign(1.0, delta[0]) == copysign(1.0, dir[0]):
-                    dist_x = delta[0] / dir[0]
-                else:
-                    dist_x = None
-
-                if dir[1] != 0 and copysign(1.0, delta[1]) == copysign(1.0, dir[1]):
-                    dist_y = delta[1] / dir[1]
-                else:
-                    dist_y = None
-
-                if dist_x is not None or dist_y is not None:
-                    min_dist = min(dist_x or 100000, dist_y or 100000)
-                    if min_dist < dist_to_wall:
-                        dest = pos + dir * min_dist
-
-                        # do cylinder rather than bounding box intersection for now at least.
-                        if np.linalg.norm(dest - entity.pos) < entity.width * 0.5:
-                            return entity
-
-        return None
+        return nearest_entity, nearest_entity and min_dist
 
     def update(self, dt):
         for entity in list(self.entities):  # make a copy of list to handle removal during update.
             entity.update(dt)
-
-    def add_squares_to_scene(self, scene):
-        self.scene = scene
-        for square in self.maze.to_squares():
-            scene.add_square(square)
-        for enemy in self.entities:
-            if isinstance(enemy, Enemy):
-                for square in enemy.squares:
-                    scene.add_square(square)
 
 
 class KlossRoyaleWindow(pyglet.window.Window):
@@ -712,9 +633,7 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.pixel_vertices = None
         self._build_vertex_list()
 
-        self.scene = Scene()
         self.game_state = GameState()
-        self.game_state.add_squares_to_scene(self.scene)
 
         self.controls_by_key = {
             key.W: Controls.MOVE_FORWARDS,
@@ -722,7 +641,7 @@ class KlossRoyaleWindow(pyglet.window.Window):
             key.A: Controls.MOVE_LEFT,
             key.D: Controls.MOVE_RIGHT,
         }
-        self.mouse_sensitivity = 2 * pi / 500
+        self.mouse_sensitivity = 2 * pi / 1000
 
         self.camera = Camera()
         self._update_camera()
@@ -769,7 +688,12 @@ class KlossRoyaleWindow(pyglet.window.Window):
         self.clear()
         self.shader.uniforms.point_size = self.pixel_size
         self.camera.update_shader_uniforms(self.shader)
-        self.scene.update_shader_uniforms(self.shader)
+
+        squares = reduce(operator.concat, (entity.to_squares() for entity in self.game_state.entities))
+        self.shader.uniforms.xy_squares_count = len(squares)
+        self.shader.uniforms.xy_square_transforms = tuple(tuple(tuple(r for r in s.transform)) for s in squares)
+        self.shader.uniforms.xy_square_colors = tuple(tuple(s.color) for s in squares)
+
         self.pixel_vertices.draw(GL_POINTS)
 
     def on_key_press(self, symbol, modifiers):
